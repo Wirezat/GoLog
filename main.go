@@ -37,12 +37,20 @@ func SetLogLevel(level LogLevel) {
 
 // ToFile enables file logging in a dated log file within the default log directory.
 func ToFile() error {
-	if err := ensureDir(defaultLogDir); err != nil {
+	executablePath, err := os.Executable()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Could not determine executable path:", err)
+		return err
+	}
+
+	logDir := filepath.Join(filepath.Dir(executablePath), defaultLogDir)
+
+	if err := ensureDir(logDir); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
 		return err
 	}
 
-	logFileName := filepath.Join(defaultLogDir, time.Now().Format("2006-01-02")+".log")
+	logFileName := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
 	f, err := openLogFile(logFileName)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to open log file:", err)
@@ -55,9 +63,7 @@ func ToFile() error {
 	logFile = f
 	fileLogger = log.New(logFile, "", 0)
 
-	// Statt Info() direkt an stderr oder stdout loggen:
-	fmt.Fprintln(os.Stdout, "File logging enabled: "+logFileName)
-
+	fmt.Fprintln(os.Stdout, "File logging enabled:", logFileName)
 	return nil
 }
 
