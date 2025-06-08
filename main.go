@@ -25,7 +25,9 @@ var (
 	logFile    *os.File
 )
 
-//#region Setup
+const defaultLogDir = "logs"
+
+// #region Setup
 
 func SetLogLevel(level LogLevel) {
 	mu.Lock()
@@ -33,20 +35,20 @@ func SetLogLevel(level LogLevel) {
 	logLevel = level
 }
 
+// ToFile enables file logging in a dated log file within the default log directory.
 func ToFile() error {
 	mu.Lock()
 	defer mu.Unlock()
 
-	logDir := "logs"
-	if err := os.MkdirAll(logDir, 0755); err != nil {
-		Error("Failed to create log directory: " + err.Error())
+	if err := ensureDir(defaultLogDir); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
 		return err
 	}
 
-	logFileName := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
-	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFileName := filepath.Join(defaultLogDir, time.Now().Format("2006-01-02")+".log")
+	f, err := openLogFile(logFileName)
 	if err != nil {
-		Error("Failed to open log file: " + err.Error())
+		fmt.Fprintln(os.Stderr, "Failed to open log file:", err)
 		return err
 	}
 
@@ -60,9 +62,19 @@ func ToFile() error {
 	return nil
 }
 
-//#endregion
+// ensureDir makes sure a directory exists.
+func ensureDir(path string) error {
+	return os.MkdirAll(path, 0755)
+}
 
-//#region Formatting
+// openLogFile opens or creates a log file for appending.
+func openLogFile(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+}
+
+// #endregion
+
+// #region Formatting
 
 func formatMessage(level LogLevel, msg string) string {
 	levelStr := ""
@@ -73,16 +85,18 @@ func formatMessage(level LogLevel, msg string) string {
 		levelStr = "WARN"
 	case ERROR:
 		levelStr = "ERROR"
+	default:
+		levelStr = "UNKNOWN"
 	}
-	return fmt.Sprintf("%s [%s] %s", time.Now().Format(time.RFC3339), levelStr, msg)
+	return fmt.Sprintf("%s [%s] %s", levelStr, time.Now().Format(time.RFC3339), msg)
 }
 
-//#endregion
+// #endregion
 
-//#region Logging
+// #region Logging
 
 func logToConsoleAndFile(level LogLevel, msg string) {
-	if logLevel > level {
+	if level < logLevel {
 		return
 	}
 
@@ -92,7 +106,6 @@ func logToConsoleAndFile(level LogLevel, msg string) {
 	defer mu.Unlock()
 
 	logger.Println(formatted)
-
 	if fileLogger != nil {
 		fileLogger.Println(formatted)
 	}
@@ -102,4 +115,4 @@ func Info(msg string)  { logToConsoleAndFile(INFO, msg) }
 func Warn(msg string)  { logToConsoleAndFile(WARN, msg) }
 func Error(msg string) { logToConsoleAndFile(ERROR, msg) }
 
-//#endregion
+// #endregion
