@@ -49,13 +49,11 @@ func ToFile() error {
 		return err
 	}
 
-	mu.Lock()
 	if logFile != nil {
 		logFile.Close()
 	}
 	logFile = f
 	fileLogger = log.New(logFile, "", 0)
-	mu.Unlock()
 
 	// Statt Info() direkt an stderr oder stdout loggen:
 	fmt.Fprintln(os.Stdout, "File logging enabled: "+logFileName)
