@@ -94,7 +94,6 @@ func formatMessage(level LogLevel, msg string) string {
 // #endregion
 
 // #region Logging
-
 func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
 	if level < logLevel {
 		return
@@ -112,8 +111,8 @@ func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func Info(format string, a ...interface{})  { logToConsoleAndFile(INFO, fmt.Sprintf(format, a...)) }
-func Warn(format string, a ...interface{})  { logToConsoleAndFile(WARN, fmt.Sprintf(format, a...)) }
-func Error(format string, a ...interface{}) { logToConsoleAndFile(ERROR, fmt.Sprintf(format, a...)) }
+func Info(format string, a ...interface{})  { logToConsoleAndFile(INFO, format, a...) }
+func Warn(format string, a ...interface{})  { logToConsoleAndFile(WARN, format, a...) }
+func Error(format string, a ...interface{}) { logToConsoleAndFile(ERROR, format, a...) }
 
 // #endregion
