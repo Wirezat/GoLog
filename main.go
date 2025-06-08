@@ -95,11 +95,12 @@ func formatMessage(level LogLevel, msg string) string {
 
 // #region Logging
 
-func logToConsoleAndFile(level LogLevel, msg string) {
+func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
 	if level < logLevel {
 		return
 	}
 
+	msg := fmt.Sprintf(format, args...)
 	formatted := formatMessage(level, msg)
 
 	mu.Lock()
