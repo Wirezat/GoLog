@@ -112,8 +112,8 @@ func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func Info(msg string)  { logToConsoleAndFile(INFO, msg) }
-func Warn(msg string)  { logToConsoleAndFile(WARN, msg) }
-func Error(msg string) { logToConsoleAndFile(ERROR, msg) }
+func Info(format string, a ...interface{})  { logToConsoleAndFile(INFO, fmt.Sprintf(format, a...)) }
+func Warn(format string, a ...interface{})  { logToConsoleAndFile(WARN, fmt.Sprintf(format, a...)) }
+func Error(format string, a ...interface{}) { logToConsoleAndFile(ERROR, fmt.Sprintf(format, a...)) }
 
 // #endregion
