@@ -37,9 +37,7 @@ func SetLogLevel(level LogLevel) {
 
 // ToFile enables file logging in a dated log file within the default log directory.
 func ToFile() error {
-	mu.Lock()
-	defer mu.Unlock()
-
+	// Nur kritische Abschnitte sperren!
 	if err := ensureDir(defaultLogDir); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
 		return err
@@ -52,12 +50,15 @@ func ToFile() error {
 		return err
 	}
 
+	mu.Lock()
 	if logFile != nil {
 		logFile.Close()
 	}
-
 	logFile = f
 	fileLogger = log.New(logFile, "", 0)
+	mu.Unlock()
+
+	// Info() aufrufen OHNE Lock
 	Info("File logging enabled: " + logFileName)
 	return nil
 }
