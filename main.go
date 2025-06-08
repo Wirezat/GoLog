@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -25,8 +26,6 @@ var (
 	logFile    *os.File
 )
 
-const defaultLogDir = "logs"
-
 // #region Setup
 
 func SetLogLevel(level LogLevel) {
@@ -43,7 +42,8 @@ func ToFile() error {
 		return err
 	}
 
-	logDir := filepath.Join(filepath.Dir(executablePath), defaultLogDir)
+	executableName := strings.TrimSuffix(filepath.Base(executablePath), filepath.Ext(executablePath))
+	logDir := filepath.Join(filepath.Dir(executablePath), "logs", executableName)
 
 	if err := ensureDir(logDir); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
