@@ -10,32 +10,27 @@ import (
 	"time"
 )
 
-type LogLevel int
+type logLevel int
 
 const (
-	INFO LogLevel = iota
-	WARN
-	ERROR
+	info logLevel = iota
+	warn
+	err
+	debug
 )
 
 var (
 	mu         sync.Mutex
-	logLevel   = INFO
 	logger     = log.New(os.Stdout, "", 0)
 	fileLogger *log.Logger
 	logFile    *os.File
 )
 
-// #region Setup
-
-func SetLogLevel(level LogLevel) {
-	mu.Lock()
-	defer mu.Unlock()
-	logLevel = level
-}
-
 // ToFile enables file logging in a dated log file within the default log directory.
 func ToFile() error {
+	mu.Lock()
+	defer mu.Unlock()
+
 	executablePath, err := os.Executable()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Could not determine executable path:", err)
@@ -45,13 +40,13 @@ func ToFile() error {
 	executableName := strings.TrimSuffix(filepath.Base(executablePath), filepath.Ext(executablePath))
 	logDir := filepath.Join(filepath.Dir(executablePath), "logs", executableName)
 
-	if err := ensureDir(logDir); err != nil {
+	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
 		return err
 	}
 
 	logFileName := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
-	f, err := openLogFile(logFileName)
+	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to open log file:", err)
 		return err
@@ -67,45 +62,9 @@ func ToFile() error {
 	return nil
 }
 
-// ensureDir makes sure a directory exists.
-func ensureDir(path string) error {
-	return os.MkdirAll(path, 0755)
-}
-
-// openLogFile opens or creates a log file for appending.
-func openLogFile(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-}
-
-// #endregion
-
-// #region Formatting
-
-func formatMessage(level LogLevel, msg string) string {
-	levelStr := ""
-	switch level {
-	case INFO:
-		levelStr = "INFO"
-	case WARN:
-		levelStr = "WARN"
-	case ERROR:
-		levelStr = "ERROR"
-	default:
-		levelStr = "UNKNOWN"
-	}
-	return fmt.Sprintf("%s [%s] %s", levelStr, time.Now().Format(time.RFC3339), msg)
-}
-
-// #endregion
-
-// #region Logging
-func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
-	if level < logLevel {
-		return
-	}
-
+func logToConsoleAndFile(level logLevel, format string, args ...any) {
 	msg := fmt.Sprintf(format, args...)
-	formatted := formatMessage(level, msg)
+	formatted := fmt.Sprintf("%s [%s] %s", level.String(), time.Now().Format(time.RFC3339), msg)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -116,8 +75,29 @@ func logToConsoleAndFile(level LogLevel, format string, args ...interface{}) {
 	}
 }
 
-func Info(format string, a ...interface{})  { logToConsoleAndFile(INFO, format, a...) }
-func Warn(format string, a ...interface{})  { logToConsoleAndFile(WARN, format, a...) }
-func Error(format string, a ...interface{}) { logToConsoleAndFile(ERROR, format, a...) }
+func (l logLevel) String() string {
+	switch l {
+	case info:
+		return "INFO"
+	case warn:
+		return "WARN"
+	case err:
+		return "ERROR"
+	case debug:
+		return "DEBUG"
+	default:
+		return "UNKNOWN"
+	}
+}
 
-// #endregion
+func Info(msg string)               { logToConsoleAndFile(info, "%s", msg) }
+func Infof(format string, a ...any) { logToConsoleAndFile(info, format, a...) }
+
+func Warn(msg string)               { logToConsoleAndFile(warn, "%s", msg) }
+func Warnf(format string, a ...any) { logToConsoleAndFile(warn, format, a...) }
+
+func Error(msg string)               { logToConsoleAndFile(err, "%s", msg) }
+func Errorf(format string, a ...any) { logToConsoleAndFile(err, format, a...) }
+
+func Debug(msg string)               { logToConsoleAndFile(debug, "%s", msg) }
+func Debugf(format string, a ...any) { logToConsoleAndFile(debug, format, a...) }
