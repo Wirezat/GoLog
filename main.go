@@ -78,15 +78,15 @@ func logToConsoleAndFile(level logLevel, format string, args ...any) {
 func (l logLevel) String() string {
 	switch l {
 	case info:
-		return "INFO"
+		return "[INFO]"
 	case warn:
-		return "WARN"
+		return "[WARN]"
 	case err:
-		return "ERROR"
+		return "[ERROR]"
 	case debug:
-		return "DEBUG"
+		return "[DEBUG]"
 	default:
-		return "UNKNOWN"
+		return "[UNKNOWN]"
 	}
 }
 
