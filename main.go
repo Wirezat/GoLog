@@ -75,6 +75,13 @@ func logToConsoleAndFile(level logLevel, format string, args ...any) {
 	}
 }
 
+func LogPath() string {
+    if logFile == nil {
+        return ""
+    }
+    return logFile.Name()
+}
+
 func (l logLevel) String() string {
 	switch l {
 	case info:
