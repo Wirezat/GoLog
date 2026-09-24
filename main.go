@@ -1,8 +1,10 @@
 package GoLog
 
 import (
+	"context"
+	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,101 +12,147 @@ import (
 	"time"
 )
 
-type logLevel int
+// Record is what OnRecord receives for every log line, alongside the normal
+// console/file output.
+type Record struct {
+	Level   string
+	Time    string
+	Message string
+}
 
-const (
-	info logLevel = iota
-	warn
-	err
-	debug
-)
+// OnRecord, when set, is called with every log line in addition to writing
+// it to the console and (once ToFile has run) the log file.
+var OnRecord func(Record)
+
+var level = &slog.LevelVar{} // defaults to slog.LevelInfo; init() lowers it to Debug
+
+func init() {
+	level.Set(slog.LevelDebug)
+}
+
+// SetLevel changes the minimum level that gets logged. Unset, everything is
+// logged, matching GoLog's original behavior.
+func SetLevel(l slog.Level) { level.Set(l) }
 
 var (
-	mu         sync.Mutex
-	logger     = log.New(os.Stdout, "", 0)
-	fileLogger *log.Logger
-	logFile    *os.File
+	mu      sync.Mutex
+	logFile *os.File
+	logPath string
 )
+
+type consoleFileHandler struct{}
+
+func (consoleFileHandler) Enabled(_ context.Context, l slog.Level) bool {
+	return l >= level.Level()
+}
+
+func (consoleFileHandler) Handle(_ context.Context, r slog.Record) error {
+	msg := r.Message
+	r.Attrs(func(a slog.Attr) bool {
+		msg += fmt.Sprintf(" %s=%v", a.Key, a.Value.Any())
+		return true
+	})
+
+	rec := Record{
+		Level:   r.Level.String(),
+		Time:    r.Time.Format(time.RFC3339),
+		Message: msg,
+	}
+	line := fmt.Sprintf("[%s] [%s] %s", rec.Level, rec.Time, rec.Message)
+
+	mu.Lock()
+	fmt.Println(line)
+	if logFile != nil {
+		fmt.Fprintln(logFile, line)
+	}
+	mu.Unlock()
+
+	if OnRecord != nil {
+		OnRecord(rec)
+	}
+	return nil
+}
+
+func (h consoleFileHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+func (h consoleFileHandler) WithGroup(string) slog.Handler      { return h }
+
+var logger = slog.New(consoleFileHandler{})
 
 // ToFile enables file logging in a dated log file within the default log directory.
 func ToFile() error {
-	mu.Lock()
-	defer mu.Unlock()
-
 	executablePath, err := os.Executable()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Could not determine executable path:", err)
-		return err
+		return fmt.Errorf("GoLog: resolving executable path: %w", err)
 	}
 
 	executableName := strings.TrimSuffix(filepath.Base(executablePath), filepath.Ext(executablePath))
 	logDir := filepath.Join(filepath.Dir(executablePath), "logs", executableName)
-
 	if err := os.MkdirAll(logDir, 0755); err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to create log directory:", err)
-		return err
+		return fmt.Errorf("GoLog: creating log directory: %w", err)
 	}
 
-	logFileName := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
-	f, err := os.OpenFile(logFileName, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	path := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to open log file:", err)
-		return err
+		return fmt.Errorf("GoLog: opening log file: %w", err)
 	}
 
+	mu.Lock()
 	if logFile != nil {
 		logFile.Close()
 	}
-	logFile = f
-	fileLogger = log.New(logFile, "", 0)
+	logFile, logPath = f, path
+	mu.Unlock()
 
-	fmt.Fprintln(os.Stdout, "File logging enabled:", logFileName)
+	fmt.Println("File logging enabled:", path)
 	return nil
 }
 
-func logToConsoleAndFile(level logLevel, format string, args ...any) {
-	msg := fmt.Sprintf(format, args...)
-	formatted := fmt.Sprintf("%s [%s] %s", level.String(), time.Now().Format(time.RFC3339), msg)
-
+// LogPath returns the current log file path, or "" if ToFile wasn't called.
+func LogPath() string {
 	mu.Lock()
 	defer mu.Unlock()
+	return logPath
+}
 
-	logger.Println(formatted)
-	if fileLogger != nil {
-		fileLogger.Println(formatted)
+// PruneLogs deletes ToFile's dated .log files older than maxAge. It is never
+// called automatically — opt in explicitly, e.g. once at startup after
+// ToFile, if a project wants log retention.
+func PruneLogs(maxAge time.Duration) error {
+	mu.Lock()
+	path := logPath
+	mu.Unlock()
+	if path == "" {
+		return errors.New("GoLog: PruneLogs requires ToFile to have been called first")
 	}
-}
+	dir := filepath.Dir(path)
 
-func LogPath() string {
-    if logFile == nil {
-        return ""
-    }
-    return logFile.Name()
-}
-
-func (l logLevel) String() string {
-	switch l {
-	case info:
-		return "[INFO]"
-	case warn:
-		return "[WARN]"
-	case err:
-		return "[ERROR]"
-	case debug:
-		return "[DEBUG]"
-	default:
-		return "[UNKNOWN]"
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("GoLog: reading log directory: %w", err)
 	}
+	cutoff := time.Now().Add(-maxAge)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		os.Remove(filepath.Join(dir, e.Name()))
+	}
+	return nil
 }
 
-func Info(msg string)               { logToConsoleAndFile(info, "%s", msg) }
-func Infof(format string, a ...any) { logToConsoleAndFile(info, format, a...) }
+// Info, Warn, Error and Debug take an optional list of alternating
+// key/value pairs, appended to the line as "key=value".
+func Info(msg string, kv ...any)  { logger.Info(msg, kv...) }
+func Warn(msg string, kv ...any)  { logger.Warn(msg, kv...) }
+func Error(msg string, kv ...any) { logger.Error(msg, kv...) }
+func Debug(msg string, kv ...any) { logger.Debug(msg, kv...) }
 
-func Warn(msg string)               { logToConsoleAndFile(warn, "%s", msg) }
-func Warnf(format string, a ...any) { logToConsoleAndFile(warn, format, a...) }
-
-func Error(msg string)               { logToConsoleAndFile(err, "%s", msg) }
-func Errorf(format string, a ...any) { logToConsoleAndFile(err, format, a...) }
-
-func Debug(msg string)               { logToConsoleAndFile(debug, "%s", msg) }
-func Debugf(format string, a ...any) { logToConsoleAndFile(debug, format, a...) }
+func Infof(format string, a ...any)  { logger.Info(fmt.Sprintf(format, a...)) }
+func Warnf(format string, a ...any)  { logger.Warn(fmt.Sprintf(format, a...)) }
+func Errorf(format string, a ...any) { logger.Error(fmt.Sprintf(format, a...)) }
+func Debugf(format string, a ...any) { logger.Debug(fmt.Sprintf(format, a...)) }
