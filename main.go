@@ -4,41 +4,94 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// Record is what OnRecord receives for every log line, alongside the normal
-// console/file output.
+// Record is what OnRecord receives for every log line.
 type Record struct {
 	Level   string
 	Time    string
 	Message string
 }
 
-// OnRecord, when set, is called with every log line in addition to writing
-// it to the console and (once ToFile has run) the log file.
+// OnRecord, when set, is called with every log line besides the console and file output.
 var OnRecord func(Record)
 
-var level = &slog.LevelVar{} // defaults to slog.LevelInfo; init() lowers it to Debug
+var level = &slog.LevelVar{}
 
 func init() {
 	level.Set(slog.LevelDebug)
 }
 
-// SetLevel changes the minimum level that gets logged. Unset, everything is
-// logged, matching GoLog's original behavior.
+// SetLevel changes the minimum level that gets logged.
 func SetLevel(l slog.Level) { level.Set(l) }
 
 var (
-	mu      sync.Mutex
-	logFile *os.File
-	logPath string
+	mu        sync.Mutex
+	logFile   *os.File
+	logPath   string
+	logDir    string
+	retention time.Duration
+	daily     sync.Once
+	privacy   atomic.Bool
+	now       = time.Now
 )
+
+// SetPrivacy switches whether values marked with IP and Personal are shortened and redacted (on) or logged as they are.
+func SetPrivacy(on bool) { privacy.Store(on) }
+
+type ipValue string
+
+// IP marks addr as a client address; with privacy on it prints as its /24 (IPv4) or /48 (IPv6) network.
+func IP(addr string) fmt.Stringer { return ipValue(addr) }
+
+func (a ipValue) String() string {
+	if !privacy.Load() {
+		return string(a)
+	}
+	return shortenIP(string(a))
+}
+
+func shortenIP(addr string) string {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if ip == nil {
+		if prefix, _, err := net.ParseCIDR(host); err == nil {
+			ip = prefix
+		}
+	}
+	switch {
+	case ip == nil:
+		return "[redacted]"
+	case ip.To4() != nil:
+		return ip.To4().Mask(net.CIDRMask(24, 32)).String()
+	default:
+		return ip.Mask(net.CIDRMask(48, 128)).String()
+	}
+}
+
+type personal struct{ v any }
+
+// Personal marks v as personal data; with privacy on it prints as "[redacted]".
+func Personal(v any) fmt.Stringer { return personal{v} }
+
+func (p personal) String() string {
+	if privacy.Load() {
+		return "[redacted]"
+	}
+	return fmt.Sprint(p.v)
+}
 
 type consoleFileHandler struct{}
 
@@ -78,34 +131,80 @@ func (h consoleFileHandler) WithGroup(string) slog.Handler      { return h }
 
 var logger = slog.New(consoleFileHandler{})
 
-// ToFile enables file logging in a dated log file within the default log directory.
+// ToFile logs into logs/<executable>/<date>.log next to the executable and switches to a new file every day at 00:01.
 func ToFile() error {
 	executablePath, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("GoLog: resolving executable path: %w", err)
 	}
+	name := strings.TrimSuffix(filepath.Base(executablePath), filepath.Ext(executablePath))
+	if err := toDir(filepath.Join(filepath.Dir(executablePath), "logs", name)); err != nil {
+		return err
+	}
+	daily.Do(func() { go runDaily() })
+	fmt.Println("File logging enabled:", LogPath())
+	return nil
+}
 
-	executableName := strings.TrimSuffix(filepath.Base(executablePath), filepath.Ext(executablePath))
-	logDir := filepath.Join(filepath.Dir(executablePath), "logs", executableName)
-	if err := os.MkdirAll(logDir, 0755); err != nil {
+func toDir(dir string) error {
+	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("GoLog: creating log directory: %w", err)
 	}
-
-	path := filepath.Join(logDir, time.Now().Format("2006-01-02")+".log")
+	path := filepath.Join(dir, now().Format("2006-01-02")+".log")
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return fmt.Errorf("GoLog: opening log file: %w", err)
 	}
-
 	mu.Lock()
 	if logFile != nil {
 		logFile.Close()
 	}
-	logFile, logPath = f, path
+	logFile, logPath, logDir = f, path, dir
 	mu.Unlock()
-
-	fmt.Println("File logging enabled:", path)
 	return nil
+}
+
+func runDaily() {
+	for {
+		time.Sleep(time.Until(nextRun(now())))
+		rotate()
+	}
+}
+
+func nextRun(t time.Time) time.Time {
+	run := time.Date(t.Year(), t.Month(), t.Day(), 0, 1, 0, 0, t.Location())
+	if !run.After(t) {
+		run = run.AddDate(0, 0, 1)
+	}
+	return run
+}
+
+func rotate() {
+	mu.Lock()
+	dir, keep := logDir, retention
+	mu.Unlock()
+	if dir == "" {
+		return
+	}
+	if err := toDir(dir); err != nil {
+		Errorf("%v", err)
+	}
+	if keep > 0 {
+		if err := PruneLogs(keep); err != nil {
+			Errorf("%v", err)
+		}
+	}
+}
+
+// SetRetention deletes log files older than d now and after every daily file switch; 0 keeps them.
+func SetRetention(d time.Duration) error {
+	mu.Lock()
+	retention = d
+	mu.Unlock()
+	if d <= 0 {
+		return nil
+	}
+	return PruneLogs(d)
 }
 
 // LogPath returns the current log file path, or "" if ToFile wasn't called.
@@ -115,38 +214,51 @@ func LogPath() string {
 	return logPath
 }
 
-// PruneLogs deletes ToFile's dated .log files older than maxAge. It is never
-// called automatically — opt in explicitly, e.g. once at startup after
-// ToFile, if a project wants log retention.
+type fileWriter struct{}
+
+// Writer returns a writer that appends raw bytes to the current log file, following the daily switch.
+func Writer() io.Writer { return fileWriter{} }
+
+func (fileWriter) Write(p []byte) (int, error) {
+	mu.Lock()
+	defer mu.Unlock()
+	if logFile == nil {
+		return len(p), nil
+	}
+	return logFile.Write(p)
+}
+
+// PruneLogs deletes the .log files besides the current one last written more than maxAge ago and returns every failed deletion.
 func PruneLogs(maxAge time.Duration) error {
 	mu.Lock()
-	path := logPath
+	dir, current := logDir, logPath
 	mu.Unlock()
-	if path == "" {
+	if dir == "" {
 		return errors.New("GoLog: PruneLogs requires ToFile to have been called first")
 	}
-	dir := filepath.Dir(path)
-
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return fmt.Errorf("GoLog: reading log directory: %w", err)
 	}
-	cutoff := time.Now().Add(-maxAge)
+	cutoff := now().Add(-maxAge)
+	var failed []error
 	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") {
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".log") || path == current {
 			continue
 		}
 		info, err := e.Info()
 		if err != nil || info.ModTime().After(cutoff) {
 			continue
 		}
-		os.Remove(filepath.Join(dir, e.Name()))
+		if err := os.Remove(path); err != nil {
+			failed = append(failed, fmt.Errorf("GoLog: deleting old log: %w", err))
+		}
 	}
-	return nil
+	return errors.Join(failed...)
 }
 
-// Info, Warn, Error and Debug take an optional list of alternating
-// key/value pairs, appended to the line as "key=value".
+// Info, Warn, Error and Debug take optional alternating key/value pairs, appended as "key=value".
 func Info(msg string, kv ...any)  { logger.Info(msg, kv...) }
 func Warn(msg string, kv ...any)  { logger.Warn(msg, kv...) }
 func Error(msg string, kv ...any) { logger.Error(msg, kv...) }
