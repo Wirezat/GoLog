@@ -204,3 +204,27 @@ func TestPruneKeepsTheCurrentFileEvenWithAShortRetention(t *testing.T) {
 		t.Errorf("current log file deleted: %v", err)
 	}
 }
+
+func TestToDirWritesIntoGivenDirectory(t *testing.T) {
+	dir := t.TempDir() + "/x/logs"
+	t.Cleanup(func() {
+		mu.Lock()
+		if logFile != nil {
+			logFile.Close()
+		}
+		logFile, logPath, logDir = nil, "", ""
+		mu.Unlock()
+	})
+
+	if err := ToDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	if got := filepath.Dir(LogPath()); got != dir {
+		t.Fatalf("LogPath dir = %q, want %q", got, dir)
+	}
+	Infof("hello")
+	data, err := os.ReadFile(LogPath())
+	if err != nil || !strings.Contains(string(data), "hello") {
+		t.Errorf("log file = %q, %v; want it to contain hello", data, err)
+	}
+}

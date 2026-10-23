@@ -146,6 +146,16 @@ func ToFile() error {
 	return nil
 }
 
+// ToDir logs into <dir>/<date>.log, creating dir, and switches to a new file every day at 00:01.
+func ToDir(dir string) error {
+	if err := toDir(dir); err != nil {
+		return err
+	}
+	daily.Do(func() { go runDaily() })
+	fmt.Println("File logging enabled:", LogPath())
+	return nil
+}
+
 func toDir(dir string) error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("GoLog: creating log directory: %w", err)
